@@ -1,17 +1,23 @@
-const $=s=>document.querySelector(s); let csrf=window.APP_CSRF, timer=null;
-async function call(action, method='GET', body=null){
- const opt={method,headers:{'X-CSRF-Token':csrf}}; if(body!==null){opt.headers['Content-Type']='application/json';opt.body=JSON.stringify(body)}
- const r=await fetch('api.php?action='+action,opt); let data; try{data=await r.json()}catch{data={error:'Non-JSON response'}}
- show(data); if(!r.ok) throw new Error(data.error||`HTTP ${r.status}`); return data;
-}
+const $=s=>document.querySelector(s);let csrf=window.APP_CSRF,timer=null;
+const sleep=ms=>new Promise(r=>setTimeout(r,ms));
 function show(v){$('#output').textContent=JSON.stringify(v,null,2)}
-function auth(on){$('#loginCard').classList.toggle('hidden',on);$('#app').classList.toggle('hidden',!on);$('#logout').classList.toggle('hidden',!on)}
-call('session').then(x=>{csrf=x.csrf;auth(x.authenticated)}).catch(()=>auth(false));
-$('#loginForm').addEventListener('submit',async e=>{e.preventDefault();try{await call('login','POST',{username:$('#username').value,pwd:$('#password').value});$('#password').value='';auth(true)}catch(e){}});
+async function call(action,method='GET',body=null,display=true){const o={method,headers:{'X-CSRF-Token':csrf}};if(body!==null){o.headers['Content-Type']='application/json';o.body=JSON.stringify(body)}const r=await fetch('api.php?action='+action,o);let d;try{d=await r.json()}catch{d={error:'Non-JSON response'}}if(display)show(d);if(!r.ok)throw new Error(d.error||`HTTP ${r.status}`);return d}
+function auth(v){$('#loginCard').classList.toggle('hidden',v);$('#app').classList.toggle('hidden',!v);$('#logout').classList.toggle('hidden',!v)}
+function rows(v){return Array.isArray(v)?v:Array.isArray(v?.data)?v.data:[]}
+function name(v){return typeof v==='string'?v:(v?.name??v?.dataset_name??v?.batch_name??v?.logical_path??'')}
+function fill(el,data,prompt){el.innerHTML='';el.add(new Option(data.length?prompt:'No items found',''));data.forEach(x=>{const n=name(x);if(n)el.add(new Option(n,n))});el.disabled=!data.length}
+function clearAfter(level){if(level==='work'){fill($('#dataset'),[],'Select dataset');$('#loadBatches').disabled=true}fill($('#batch'),[],'Select batch');$('#submitBatch').disabled=true}
+async function resolved(initial,infoId){if(Array.isArray(initial?.data)||!initial?.id)return initial;for(let i=1;i<=40;i++){document.getElementById(infoId).textContent=`Checking request ${initial.id} (${i})`;await sleep(1500);const r=await call('results&id='+encodeURIComponent(initial.id),'GET',null,false);if(Array.isArray(r?.data)||r?.error||['failed','canceled','cancelled'].includes(String(r?.status).toLowerCase()))return r}throw new Error('No results returned within polling limit')}
+async function load(kind,button,body,infoId,select,prompt){button.disabled=true;const old=button.textContent;button.textContent='Loading...';try{let r=await call(kind,'POST',body);r=await resolved(r,infoId);const a=rows(r);fill(select,a,prompt);document.getElementById(infoId).textContent=`${a.length} item(s) returned`;show(r)}catch(e){document.getElementById(infoId).textContent=e.message;show({error:e.message})}finally{button.textContent=old;button.disabled=false}}
+$('#loadWorkAreas').onclick=()=>{clearAfter('work');load('work-areas',$('#loadWorkAreas'),{search_pattern:$('#workAreaSearch').value.trim()},'workAreaInfo',$('#workArea'),'Select a work area')};
+$('#loadDatasets').onclick=()=>{clearAfter('work');load('datasets',$('#loadDatasets'),{logical_path:$('#workArea').value,search_pattern:$('#datasetSearch').value.trim(),max_depth:10,retrieve_axis_version:true},'datasetInfo',$('#dataset'),'Select a dataset')};
+$('#loadBatches').onclick=()=>{clearAfter('dataset');load('batches',$('#loadBatches'),{dataset_path:$('#workArea').value,dataset:$('#dataset').value,search_pattern:$('#batchSearch').value.trim()},'batchInfo',$('#batch'),'Select a batch')};
+$('#workArea').onchange=()=>{clearAfter('work');$('#loadDatasets').disabled=!$('#workArea').value};
+$('#dataset').onchange=()=>{clearAfter('dataset');$('#loadBatches').disabled=!$('#dataset').value};
+$('#batch').onchange=()=>$('#submitBatch').disabled=!$('#batch').value;
+call('session').then(x=>{csrf=x.csrf;auth(x.authenticated);if(x.authenticated)$('#loadWorkAreas').click()}).catch(()=>auth(false));
+$('#loginForm').onsubmit=async e=>{e.preventDefault();try{await call('login','POST',{username:$('#username').value,pwd:$('#password').value});$('#password').value='';auth(true);$('#loadWorkAreas').click()}catch{}};
 $('#logout').onclick=async()=>{clearInterval(timer);await call('logout','POST',{});auth(false)};
-$('#runForm').addEventListener('submit',async e=>{e.preventDefault();let params;try{params=JSON.parse($('#params').value||'{}')}catch{show({error:'Parameters must be valid JSON'});return}
- try{const x=await call('submit','POST',{dataset_path:$('#dataset_path').value,dataset:$('#dataset').value,batch_name:$('#batch_name').value,gridlink_queue:$('#gridlink_queue').value,params});if(x.id){$('#taskId').value=x.id;startPolling(x.id)}}catch(e){}});
-async function status(id){return call('task&id='+encodeURIComponent(id))}
-function startPolling(id){clearInterval(timer);$('#polling').textContent='Polling every 3 seconds.';timer=setInterval(async()=>{try{const x=await status(id);const item=Array.isArray(x.data)?x.data[0]:x;const s=String(item?.status??'').toLowerCase();if(['done','failed','completed','cancelled','canceled'].includes(s)){clearInterval(timer);$('#polling').textContent='Polling stopped: '+s;if(['done','completed'].includes(s)) await call('results&id='+encodeURIComponent(id));}}catch{}},3000)}
-$('#check').onclick=()=>status($('#taskId').value.trim());
-$('#results').onclick=()=>call('results&id='+encodeURIComponent($('#taskId').value.trim()));
+$('#runForm').onsubmit=async e=>{e.preventDefault();let p;try{p=JSON.parse($('#params').value||'{}')}catch{return show({error:'Parameters must be valid JSON'})}const r=await call('submit','POST',{dataset_path:$('#workArea').value,dataset:$('#dataset').value,batch_name:$('#batch').value,gridlink_queue:$('#gridlink_queue').value.trim(),params:p});if(r.id){$('#taskId').value=r.id;poll(r.id)}};
+async function status(id){return call('task&id='+encodeURIComponent(id))}function poll(id){clearInterval(timer);$('#polling').textContent='Polling every 3 seconds';timer=setInterval(async()=>{try{const r=await status(id),x=Array.isArray(r.data)?r.data[0]:r,s=String(x?.status??'').toLowerCase();if(['done','completed','failed','canceled','cancelled'].includes(s)){clearInterval(timer);$('#polling').textContent='Stopped: '+s;if(['done','completed'].includes(s))await call('results&id='+encodeURIComponent(id))}}catch{}},3000)}
+$('#check').onclick=()=>status($('#taskId').value.trim());$('#results').onclick=()=>call('results&id='+encodeURIComponent($('#taskId').value.trim()));
